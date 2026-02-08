@@ -49,6 +49,9 @@ export default function Navbar() {
                         <Link className={`text-sm font-medium hover:text-primary transition-colors ${pathname === '/prompt-builder' ? 'text-blue-400' : ''}`} href="/prompt-builder">
                             Builder
                         </Link>
+                        <Link className={`text-sm font-medium hover:text-primary transition-colors ${pathname === '/prompts' ? 'text-blue-400' : ''}`} href="/prompts">
+                            Library
+                        </Link>
                         <Link className={`text-sm font-medium hover:text-primary transition-colors ${pathname === '/history' ? 'text-blue-400' : ''}`} href="/history">
                             History
                         </Link>

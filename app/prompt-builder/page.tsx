@@ -10,11 +10,13 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Label } from "@/components/ui/label";
 import { evaluatePrompt, type EvaluationResult } from "@/lib/evaluation-model";
 import { recommendBestModel, type Recommendation } from "@/lib/recommendation-engine";
-import { Copy, Star, Check, AlertCircle, Loader2 } from "lucide-react";
+import { Copy, Star, Check, AlertCircle, Loader2, Save } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { ModelResultsGrid } from "@/components/prompt-builder/ModelResultsGrid";
 import { ExplainabilityPanel } from "@/components/prompt-builder/ExplainabilityPanel";
-import { Maximize2, Lightbulb, GraduationCap } from "lucide-react";
+import { PromptDiff } from "@/components/prompt-builder/PromptDiff";
+import { ContextManager } from "@/components/prompt-builder/ContextManager";
+import { Maximize2, Lightbulb, GraduationCap, GitCompare } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { getExplanation, getRandomTip } from "@/lib/learning-content";
 
@@ -44,6 +46,9 @@ function PromptBuilderContent() {
     const [advancedMode, setAdvancedMode] = useState(false);
     const [isFocusMode, setIsFocusMode] = useState(false);
     const [isLearningMode, setIsLearningMode] = useState(false);
+    const [showDiff, setShowDiff] = useState(false);
+    const [enableRAG, setEnableRAG] = useState(false);
+    const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
     const [dailyTip, setDailyTip] = useState("");
     const [style, setStyle] = useState("Strict");
     const [evaluation, setEvaluation] = useState<EvaluationResult>({
@@ -62,7 +67,9 @@ function PromptBuilderContent() {
     const [versions, setVersions] = useState<{ label: string; content: string; timestamp: Date }[]>([]);
 
     // Tracking state
+    // Tracking state
     const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
+    const [currentTemplateId, setCurrentTemplateId] = useState<string | null>(null);
     const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
     const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
     const [isFallbackMode, setIsFallbackMode] = useState(false);
@@ -143,10 +150,11 @@ function PromptBuilderContent() {
                         // Set results and ID if loading history to enable favoriting updates
                         if (source === 'history') {
                             setCurrentHistoryId(loadId);
+                            setCurrentTemplateId(null);
+                        } else if (source === 'templates') {
+                            setCurrentTemplateId(loadId);
+                            setCurrentHistoryId(null);
                         }
-
-                        // Note: We don't set currentHistoryId for templates to avoid accidentally converting a template to a history item on patch.
-                        // Future improvement: Allow PATCHing templates for favorites.
 
                         if (data.evaluation) {
                             setEvaluation(data.evaluation);
@@ -203,7 +211,13 @@ function PromptBuilderContent() {
                     "Content-Type": "application/json",
                     "Authorization": `Bearer ${localStorage.getItem("token") || ""}`
                 },
-                body: JSON.stringify({ inputs, evaluation, style }),
+                body: JSON.stringify({
+                    inputs,
+                    evaluation,
+                    style,
+                    enableRAG,
+                    selectedDocIds
+                }),
             });
             const data = await res.json();
 
@@ -246,18 +260,24 @@ function PromptBuilderContent() {
 
                 await fetch("/api/history", {
                     method: "PATCH",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${token}`
-                    },
-                    body: JSON.stringify({
-                        id: currentHistoryId,
-                        results: newResults
-                    })
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+                    body: JSON.stringify({ id: currentHistoryId, results: newResults })
                 });
-            } catch (e) {
-                console.error("Failed to update favorite");
-            }
+            } catch (e) { console.error("Failed to update history favorite"); }
+        }
+
+        // Update template if it exists
+        if (currentTemplateId) {
+            try {
+                const token = localStorage.getItem("token");
+                if (!token) return;
+
+                await fetch("/api/templates", {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+                    body: JSON.stringify({ id: currentTemplateId, results: newResults })
+                });
+            } catch (e) { console.error("Failed to update template favorite"); }
         }
     };
 
@@ -380,6 +400,48 @@ function PromptBuilderContent() {
         }
     };
 
+    const handleSaveToLibrary = async () => {
+        const title = prompt("Enter a title for this Prompt Library item:", inputs.task ? inputs.task.substring(0, 50) : "Untitled Prompt");
+        if (!title) return;
+
+        try {
+            const token = localStorage.getItem("token");
+            if (!token) return;
+
+            const formattedResponses = results.filter(r => r.status === 'success' && r.text).map(r => ({
+                model: r.name,
+                text: r.text,
+                duration: r.duration,
+                cost: 0, // Placeholder
+                timestamp: new Date()
+            }));
+
+            const res = await fetch("/api/prompts", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    title,
+                    originalPrompt: inputs.task,
+                    optimizedPrompt: generatedPrompt || inputs.task,
+                    tags: [inputs.role, inputs.tone, inputs.outputFormat].filter(Boolean),
+                    responses: formattedResponses
+                })
+            });
+
+            if (res.ok) {
+                alert("Saved to Prompt Library! 🚀");
+            } else {
+                alert("Failed to save to library.");
+            }
+        } catch (e) {
+            console.error("Library save failed", e);
+            alert("Error saving to library");
+        }
+    };
+
     const getScoreColor = (score: number) => {
         if (score >= 80) return "bg-green-500";
         if (score >= 50) return "bg-yellow-500";
@@ -416,6 +478,10 @@ function PromptBuilderContent() {
                     </Button>
                     <Button variant="outline" onClick={handleSaveTemplate} disabled={!inputs.task}>
                         Save as Template
+                    </Button>
+                    <Button onClick={handleSaveToLibrary} disabled={!inputs.task} className="bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 border-none text-white">
+                        <Save className="w-4 h-4 mr-2" />
+                        Save to Library
                     </Button>
                 </div>
             </header>
@@ -582,6 +648,34 @@ function PromptBuilderContent() {
                                 </TooltipProvider>
                             </CardFooter>
                         </Card>
+
+                        {/* RAG Context Manager */}
+                        <Card>
+                            <CardHeader>
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <CardTitle>Context Sources (RAG)</CardTitle>
+                                        <CardDescription>Upload documents to enhance prompts with relevant context</CardDescription>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Label htmlFor="enable-rag" className="text-sm cursor-pointer">Enable</Label>
+                                        <Switch
+                                            id="enable-rag"
+                                            checked={enableRAG}
+                                            onCheckedChange={setEnableRAG}
+                                        />
+                                    </div>
+                                </div>
+                            </CardHeader>
+                            {enableRAG && (
+                                <CardContent>
+                                    <ContextManager
+                                        selectedDocIds={selectedDocIds}
+                                        onSelectionChange={setSelectedDocIds}
+                                    />
+                                </CardContent>
+                            )}
+                        </Card>
                     </div>
 
                     <div className="space-y-6">
@@ -705,27 +799,45 @@ function PromptBuilderContent() {
                                         </div>
                                         <CardDescription>Edit before sending to LLMs.</CardDescription>
                                     </div>
-                                    {versions.length > 0 && (
-                                        <select
-                                            className="text-xs bg-background border rounded px-2 py-1 outline-none focus:ring-2 focus:ring-primary"
-                                            onChange={(e) => setGeneratedPrompt(e.target.value)}
-                                            value={generatedPrompt}
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant={showDiff ? "default" : "outline"}
+                                            size="sm"
+                                            onClick={() => setShowDiff(!showDiff)}
+                                            className="gap-2"
                                         >
-                                            <option value={generatedPrompt} disabled>Current Edit</option>
-                                            {versions.map((v, i) => (
-                                                <option key={i} value={v.content}>
-                                                    {v.label} ({new Date(v.timestamp).toLocaleTimeString()})
-                                                </option>
-                                            ))}
-                                        </select>
-                                    )}
+                                            <GitCompare className="w-4 h-4" />
+                                            {showDiff ? "Hide" : "Show"} Diff
+                                        </Button>
+                                        {versions.length > 0 && (
+                                            <select
+                                                className="text-xs bg-background border rounded px-2 py-1 outline-none focus:ring-2 focus:ring-primary"
+                                                onChange={(e) => setGeneratedPrompt(e.target.value)}
+                                                value={generatedPrompt}
+                                            >
+                                                <option value={generatedPrompt} disabled>Current Edit</option>
+                                                {versions.map((v, i) => (
+                                                    <option key={i} value={v.content}>
+                                                        {v.label} ({new Date(v.timestamp).toLocaleTimeString()})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        )}
+                                    </div>
                                 </CardHeader>
                                 <CardContent>
-                                    <Textarea
-                                        className="min-h-[250px] font-mono text-sm"
-                                        value={generatedPrompt}
-                                        onChange={(e) => setGeneratedPrompt(e.target.value)}
-                                    />
+                                    {showDiff ? (
+                                        <PromptDiff
+                                            originalPrompt={inputs.task}
+                                            optimizedPrompt={generatedPrompt}
+                                        />
+                                    ) : (
+                                        <Textarea
+                                            className="min-h-[250px] font-mono text-sm"
+                                            value={generatedPrompt}
+                                            onChange={(e) => setGeneratedPrompt(e.target.value)}
+                                        />
+                                    )}
                                 </CardContent>
                                 <CardContent className="border-t pt-6">
                                     <Label className="mb-2 block text-blue-400">4. Test Data / Variables (Optional)</Label>

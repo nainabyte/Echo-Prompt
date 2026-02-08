@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
 import Template from "@/models/Template";
+import History from "@/models/History";
 import { verifyToken } from "@/lib/auth";
 
 async function getUser(req: Request) {
@@ -43,6 +44,34 @@ export async function POST(req: Request) {
     }
 }
 
+export async function PATCH(req: Request) {
+    try {
+        const payload = await getUser(req);
+        if (!payload) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+        const body = await req.json();
+        const { id, results } = body;
+
+        if (!id) return NextResponse.json({ error: "Missing ID" }, { status: 400 });
+
+        await dbConnect();
+
+        const template = await Template.findOne({ _id: id, user: payload.userId });
+        if (!template) return NextResponse.json({ error: "Template not found" }, { status: 404 });
+
+        if (results) {
+            template.results = results;
+        }
+
+        await template.save();
+
+        return NextResponse.json(template);
+    } catch (error: any) {
+        console.error("[Templates PATCH] Error:", error);
+        return NextResponse.json({ error: "Server Error" }, { status: 500 });
+    }
+}
+
 export async function GET(req: Request) {
     try {
         const payload = await getUser(req);
@@ -56,6 +85,38 @@ export async function GET(req: Request) {
         if (id) {
             const item = await Template.findOne({ _id: id, user: payload.userId });
             if (!item) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+            // Sync favorites from History if linked
+            if (item.historyId) {
+                try {
+                    const historyItem = await History.findOne({ _id: item.historyId, user: payload.userId });
+                    if (historyItem && historyItem.results) {
+                        let hasUpdates = false;
+                        const favMap = new Map();
+                        // Map using prompt text as key since logic is deterministic
+                        historyItem.results.forEach((r: any) => {
+                            if (r.text) favMap.set(r.text, !!r.isFavorite);
+                        });
+
+                        // Update template results to match history
+                        item.results.forEach((r: any) => {
+                            const historyFav = favMap.get(r.text);
+                            if (historyFav !== undefined && r.isFavorite !== historyFav) {
+                                r.isFavorite = historyFav;
+                                hasUpdates = true;
+                            }
+                        });
+
+                        if (hasUpdates) {
+                            await item.save();
+                        }
+                    }
+                } catch (e) {
+                    console.error("Failed to sync template with history", e);
+                    // Continue returning item even if sync fails
+                }
+            }
+
             return NextResponse.json(item);
         }
 

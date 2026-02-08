@@ -76,7 +76,7 @@ export async function generateWithHF(prompt: string, modelRec: "flan-t5" | "zeph
 
     // Mapping to available Router models (OpenAI compatible)
     const models = {
-        "flan-t5": "google/gemma-2-9b-it", // Replacing with Gemma 2
+        "flan-t5": "meta-llama/Meta-Llama-3-8B-Instruct", // Replacing decommissioned Gemma 2-9b-it
         "zephyr": "meta-llama/Meta-Llama-3-8B-Instruct", // Replacing with Llama 3
         "mixtral": "Qwen/Qwen2.5-72B-Instruct" // Replacing with Qwen 2.5 72B
     };

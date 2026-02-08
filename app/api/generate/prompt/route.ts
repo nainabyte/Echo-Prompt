@@ -4,6 +4,9 @@ import { generateFallbackPrompt } from "@/lib/fallback-generator";
 import dbConnect from "@/lib/db";
 import User from "@/models/User";
 import { verifyToken } from "@/lib/auth";
+import { generateEmbedding } from "@/lib/embeddings";
+import { searchSimilarChunks } from "@/lib/mongodb-vector";
+import { formatContextForPrompt } from "@/lib/context-retrieval";
 
 // Helper to get user from request (duplicated for now, could be shared)
 async function getUser(req: Request) {
@@ -17,8 +20,8 @@ export async function POST(req: Request) {
     let inputs;
 
     // 1. Authenticate & Usage Check
-    let user = null;
-    let userId = null;
+    let user: any = null;
+    let userId: string | null = null;
     let remainingRequests = 0;
 
     try {
@@ -32,7 +35,7 @@ export async function POST(req: Request) {
         if (payload) {
             await dbConnect();
             user = await User.findById(payload.userId);
-            userId = payload.userId;
+            userId = payload.userId as string;
 
             if (user) {
                 // Check quota
@@ -64,9 +67,34 @@ export async function POST(req: Request) {
         inputs = body.inputs;
         const evaluation = body.evaluation;
         const style = body.style;
+        const enableRAG = body.enableRAG;
+        const selectedDocIds = body.selectedDocIds;
 
         if (!inputs) {
             return NextResponse.json({ error: "Missing inputs" }, { status: 400 });
+        }
+
+        // 2. RAG Context Retrieval (Optional)
+        let retrievedContext = "";
+        if (enableRAG && userId) {
+            try {
+                // Use the task as the query for RAG
+                const queryText = inputs?.task || "";
+                const queryEmbedding = await generateEmbedding(queryText);
+                const results = await searchSimilarChunks(
+                    userId as string,
+                    queryEmbedding,
+                    5, // Top 5 relevant chunks
+                    selectedDocIds // Filter by selected documents if provided
+                );
+
+                if (results && results.length > 0) {
+                    retrievedContext = formatContextForPrompt(results);
+                }
+            } catch (ragError) {
+                console.error("RAG Retrieval Error:", ragError);
+                // Continue without context if RAG fails
+            }
         }
 
         // Construct the meta-prompt for Gemini
@@ -86,6 +114,12 @@ export async function POST(req: Request) {
     
     STYLE: ${style || "Standard"}
     
+    ${retrievedContext ? `GROUNDING CONTEXT:
+    The following information was retrieved from the user's uploaded documents. 
+    Use this knowledge to GROUND the optimized prompt and ensure it respects the provided context.
+    
+    ${retrievedContext}` : ""}
+    
     REQUIRED OUTPUT FORMAT:
     ROLE:
     [Defined Persona]
@@ -94,7 +128,7 @@ export async function POST(req: Request) {
     [Clear instruction]
     
     CONTEXT & CONSTRAINTS:
-    [Contextual details]
+    [Contextual details - INGEST RETRIEVED KNOWLEDGE HERE IF APPLICABLE]
     
     OUTPUT REQUIREMENTS:
     [Format and Tone]

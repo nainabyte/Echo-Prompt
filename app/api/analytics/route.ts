@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
 import History from "@/models/History";
+import PromptHistory from "@/models/PromptHistory";
 import { verifyToken } from "@/lib/auth";
 import mongoose from "mongoose";
 
@@ -19,11 +20,10 @@ export async function GET(req: Request) {
         await dbConnect();
         const userId = new mongoose.Types.ObjectId(payload.userId as string);
 
-        const pipeline = [
+        const historyPipeline = [
             { $match: { user: userId } },
             {
                 $facet: {
-                    // General Stats
                     stats: [
                         {
                             $group: {
@@ -33,7 +33,6 @@ export async function GET(req: Request) {
                             }
                         }
                     ],
-                    // Popular Models (based on favorites)
                     popularModels: [
                         { $unwind: "$results" },
                         { $match: { "results.isFavorite": true } },
@@ -46,7 +45,6 @@ export async function GET(req: Request) {
                         { $sort: { count: -1 } },
                         { $limit: 5 }
                     ],
-                    // Recent Activity (last 7 days volume)
                     recentActivity: [
                         { $match: { createdAt: { $gte: new Date(new Date().setDate(new Date().getDate() - 7)) } } },
                         {
@@ -61,18 +59,86 @@ export async function GET(req: Request) {
             }
         ];
 
-        const data = await History.aggregate(pipeline as any);
+        // Prompt Library (New) Pipeline
+        const libraryPipeline = [
+            { $match: { user: userId } },
+            {
+                $facet: {
+                    stats: [
+                        {
+                            $group: {
+                                _id: null,
+                                totalPrompts: { $sum: 1 },
+                                avgScore: { $avg: 0 } // PromptHistory doesn't have evals yet
+                            }
+                        }
+                    ],
+                    popularModels: [
+                        { $unwind: "$responses" }, // Note: Library calls it 'responses'
+                        { $match: { "responses.isFavorite": true } },
+                        {
+                            $group: {
+                                _id: "$responses.model", // Note: Library calls it 'model'
+                                count: { $sum: 1 }
+                            }
+                        },
+                        { $sort: { count: -1 } },
+                        { $limit: 5 }
+                    ],
+                    recentActivity: [
+                        { $match: { createdAt: { $gte: new Date(new Date().setDate(new Date().getDate() - 7)) } } },
+                        {
+                            $group: {
+                                _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                                count: { $sum: 1 }
+                            }
+                        },
+                        { $sort: { _id: 1 } }
+                    ]
+                }
+            }
+        ];
 
-        const stats = data[0].stats[0] || { totalPrompts: 0, avgScore: 0 };
-        const popularModels = data[0].popularModels;
-        const recentActivity = data[0].recentActivity;
+        const [historyData, libraryData] = await Promise.all([
+            History.aggregate(historyPipeline),
+            PromptHistory.aggregate(libraryPipeline)
+        ]);
+
+        // Merge Data
+        const hStats = historyData[0]?.stats[0] || { totalPrompts: 0, avgScore: 0 };
+        const lStats = libraryData[0]?.stats[0] || { totalPrompts: 0, avgScore: 0 };
+
+        const totalPrompts = hStats.totalPrompts + lStats.totalPrompts;
+        // Simple avg score logic (weighted average would be better but simple for now)
+        const avgScore = hStats.totalPrompts > 0 ? hStats.avgScore : 0;
+
+        // Merge Popular Models
+        const modelMap = new Map();
+        [...(historyData[0]?.popularModels || []), ...(libraryData[0]?.popularModels || [])].forEach((m: any) => {
+            const current = modelMap.get(m._id) || 0;
+            modelMap.set(m._id, current + m.count);
+        });
+        const popularModels = Array.from(modelMap.entries())
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 5);
+
+        // Merge Recent Activity
+        const activityMap = new Map();
+        [...(historyData[0]?.recentActivity || []), ...(libraryData[0]?.recentActivity || [])].forEach((a: any) => {
+            const current = activityMap.get(a._id) || 0;
+            activityMap.set(a._id, current + a.count);
+        });
+        const recentActivity = Array.from(activityMap.entries())
+            .map(([date, count]) => ({ _id: date, count })) // formatting to match expected output structure for map below
+            .sort((a, b) => a._id.localeCompare(b._id));
 
         return NextResponse.json({
             summary: {
-                totalPrompts: stats.totalPrompts,
-                avgScore: Math.round(stats.avgScore || 0)
+                totalPrompts,
+                avgScore: Math.round(avgScore)
             },
-            popularModels: popularModels.map((m: any) => ({ name: m._id, count: m.count })),
+            popularModels,
             recentActivity: recentActivity.map((a: any) => ({ date: a._id, count: a.count }))
         });
 
