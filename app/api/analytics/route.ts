@@ -69,7 +69,8 @@ export async function GET(req: Request) {
                             $group: {
                                 _id: null,
                                 totalPrompts: { $sum: 1 },
-                                avgScore: { $avg: 0 } // PromptHistory doesn't have evals yet
+                                avgScore: { $avg: { $avg: "$responses.evaluation.score" } },
+                                avgRating: { $avg: { $avg: "$responses.rating" } }
                             }
                         }
                     ],
@@ -100,8 +101,8 @@ export async function GET(req: Request) {
         ];
 
         const [historyData, libraryData] = await Promise.all([
-            History.aggregate(historyPipeline),
-            PromptHistory.aggregate(libraryPipeline)
+            History.aggregate(historyPipeline as any[]),
+            PromptHistory.aggregate(libraryPipeline as any[])
         ]);
 
         // Merge Data
@@ -136,7 +137,8 @@ export async function GET(req: Request) {
         return NextResponse.json({
             summary: {
                 totalPrompts,
-                avgScore: Math.round(avgScore)
+                avgScore: Math.round(((hStats.avgScore * hStats.totalPrompts) + (lStats.avgScore * lStats.totalPrompts)) / (totalPrompts || 1)),
+                avgHumanRating: Math.round((lStats.avgRating || 0) * 10) / 10
             },
             popularModels,
             recentActivity: recentActivity.map((a: any) => ({ date: a._id, count: a.count }))

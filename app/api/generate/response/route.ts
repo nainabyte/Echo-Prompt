@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { generateWithGeminiFlash, generateWithGroq, generateWithHF } from "@/lib/ai-clients";
+import { evaluateResponse } from "@/lib/evaluators";
 
 // We will use a streaming approach or just wait for all?
 // "Execute in parallel. Do not fail if one model fails"
 // We return a JSON with all results.
 
 export async function POST(req: Request) {
-    const { prompt } = await req.json();
+    const { prompt, requirements } = await req.json();
 
     if (!prompt) {
         return NextResponse.json({ error: "Missing prompt" }, { status: 400 });
@@ -30,7 +31,17 @@ export async function POST(req: Request) {
             try {
                 const text = await job.fn();
                 const duration = Date.now() - start;
-                return { name: job.name, status: "success", text, duration };
+
+                // Perform automated evaluation
+                const evaluation = await evaluateResponse(text, requirements);
+
+                return {
+                    name: job.name,
+                    status: "success",
+                    text,
+                    duration,
+                    evaluation
+                };
             } catch (e: any) {
                 const duration = Date.now() - start;
                 return { name: job.name, status: "error", error: e.message, duration };

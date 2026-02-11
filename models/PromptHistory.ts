@@ -22,6 +22,7 @@ const PromptHistorySchema = new mongoose.Schema({
         {
             label: { type: String, default: "v1" },
             content: { type: String, required: true },
+            score: { type: Number, default: 0 },
             timestamp: { type: Date, default: Date.now },
             comments: String
         }
@@ -33,7 +34,14 @@ const PromptHistorySchema = new mongoose.Schema({
             cost: { type: Number, default: 0 }, // Estimated cost in USD
             duration: { type: Number, default: 0 }, // Execution time in ms
             timestamp: { type: Date, default: Date.now },
-            isFavorite: { type: Boolean, default: false }
+            isFavorite: { type: Boolean, default: false },
+            rating: { type: Number, min: 0, max: 5, default: 0 },
+            evaluation: {
+                isValidJson: { type: Boolean, default: true },
+                score: { type: Number, default: 0 },
+                feedback: [String],
+                keywordsFound: [String]
+            }
         }
     ],
     tags: [String],

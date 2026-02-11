@@ -24,6 +24,7 @@ const HistorySchema = new mongoose.Schema({
         {
             label: String,
             content: String,
+            score: Number,
             timestamp: { type: Date, default: Date.now }
         }
     ],

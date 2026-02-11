@@ -16,6 +16,9 @@ interface ModelResultsGridProps {
     copiedIndex: number | null;
     isLoading?: boolean;
     recommendation?: Recommendation | null;
+    onRate?: (index: number, rating: number) => void;
+    onPin?: (index: number) => void;
+    onReRun?: (index: number, tweakedPrompt: string) => void;
 }
 
 function SkeletonCard() {
@@ -49,7 +52,10 @@ function SkeletonCard() {
     );
 }
 
-export function ModelResultsGrid({ results, onToggleFavorite, onCopy, copiedIndex, isLoading = false, recommendation }: ModelResultsGridProps) {
+export function ModelResultsGrid({
+    results, onToggleFavorite, onCopy, copiedIndex, isLoading = false,
+    recommendation, onRate, onPin, onReRun
+}: ModelResultsGridProps) {
     const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
     const [syncScroll, setSyncScroll] = useState(true);
     const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
@@ -154,6 +160,9 @@ export function ModelResultsGrid({ results, onToggleFavorite, onCopy, copiedInde
                                     isSelected={selectedIndices.includes(idx)}
                                     onToggleSelection={handleToggleSelection}
                                     selectionDisabled={selectedIndices.length >= 2 && !selectedIndices.includes(idx)}
+                                    onRate={onRate}
+                                    onPin={onPin}
+                                    onReRun={onReRun}
                                 />
                             </div>
                         );

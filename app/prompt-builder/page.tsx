@@ -10,15 +10,17 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Label } from "@/components/ui/label";
 import { evaluatePrompt, type EvaluationResult } from "@/lib/evaluation-model";
 import { recommendBestModel, type Recommendation } from "@/lib/recommendation-engine";
-import { Copy, Star, Check, AlertCircle, Loader2, Save } from "lucide-react";
+import { Copy, Star, Check, AlertCircle, Loader2, Save, ChevronDown, ChevronUp } from "lucide-react";
 import { useSearchParams } from "next/navigation";
+import { cn } from "@/lib/utils";
 import { ModelResultsGrid } from "@/components/prompt-builder/ModelResultsGrid";
 import { ExplainabilityPanel } from "@/components/prompt-builder/ExplainabilityPanel";
 import { PromptDiff } from "@/components/prompt-builder/PromptDiff";
 import { ContextManager } from "@/components/prompt-builder/ContextManager";
-import { Maximize2, Lightbulb, GraduationCap, GitCompare } from "lucide-react";
+import { Maximize2, Lightbulb, GraduationCap, GitCompare, Download, FileText, FileJson, FileType } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { getExplanation, getRandomTip } from "@/lib/learning-content";
+import { downloadMarkdown, downloadPDF, downloadJSON, type ExportData } from "@/lib/export-utils";
 
 interface ModelResult {
     name: string;
@@ -27,6 +29,183 @@ interface ModelResult {
     error?: string;
     duration: number;
     isFavorite?: boolean;
+    isPinned?: boolean;
+    cost?: number;
+    rating?: number;
+    evaluation?: {
+        isValidJson: boolean;
+        score: number;
+        feedback: string[];
+        keywordsFound: string[];
+    };
+}
+
+function Sparkline({ data }: { data: number[] }) {
+    if (data.length === 0) return null;
+    const min = 0;
+    const max = 100;
+    const width = 120;
+    const height = 30;
+    const padding = 2;
+
+    if (data.length === 1) {
+        return (
+            <svg width={width} height={height} className="overflow-visible">
+                <circle
+                    cx={width / 2}
+                    cy={height - ((data[0] - min) / (max - min)) * (height - 2 * padding) - padding}
+                    r="2"
+                    className="fill-primary"
+                />
+            </svg>
+        );
+    }
+
+    // Normalize data to fit the sparkline
+    const points = data.map((val, i) => {
+        const x = (i / (data.length - 1)) * (width - 2 * padding) + padding;
+        const y = height - ((val - min) / (max - min)) * (height - 2 * padding) - padding;
+        return `${x},${y}`;
+    }).join(" ");
+
+    return (
+        <svg width={width} height={height} className="overflow-visible">
+            <polyline
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                points={points}
+                className="text-primary transition-all duration-500"
+            />
+            {data.map((val, i) => (
+                <circle
+                    key={i}
+                    cx={(i / (data.length - 1)) * (width - 2 * padding) + padding}
+                    cy={height - ((val - min) / (max - min)) * (height - 2 * padding) - padding}
+                    r="2"
+                    className="fill-primary"
+                />
+            ))}
+        </svg>
+    );
+}
+
+function PromptQualityMeter({ score, historicalScores, ruleLog }: { score: number, historicalScores: number[], ruleLog?: any[] }) {
+    const getMeterColor = (s: number) => {
+        if (s < 40) return "from-red-500 to-red-400";
+        if (s < 70) return "from-yellow-500 to-yellow-400";
+        return "from-emerald-500 to-emerald-400";
+    };
+
+    return (
+        <div className="space-y-4">
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                    <div className={cn(
+                        "w-16 h-16 rounded-full border-4 flex items-center justify-center text-xl font-black transition-all duration-500",
+                        score < 40 ? "border-red-500/20 text-red-500 shadow-[0_0_15px_-3px_rgba(239,68,68,0.3)]" :
+                            score < 70 ? "border-yellow-500/20 text-yellow-500 shadow-[0_0_15px_-3px_rgba(234,179,8,0.3)]" :
+                                "border-emerald-500/20 text-emerald-500 shadow-[0_0_15px_-3px_rgba(16,185,129,0.3)]"
+                    )}>
+                        {score}
+                    </div>
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <div className="text-sm font-semibold text-zinc-100 uppercase tracking-wider">Quality Score</div>
+                            {ruleLog && ruleLog.length > 0 && (
+                                <ExplainabilityPanel ruleLog={ruleLog} score={score} />
+                            )}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                            {score < 40 ? "Needs significant improvement" :
+                                score < 70 ? "Good, but can be better" :
+                                    "High quality prompt"}
+                        </div>
+                    </div>
+                </div>
+                {historicalScores.length > 1 && (
+                    <div className="flex flex-col items-end gap-1">
+                        <span className="text-[10px] uppercase tracking-tighter text-muted-foreground">Historical Trend</span>
+                        <Sparkline data={historicalScores} />
+                    </div>
+                )}
+            </div>
+            <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                <div
+                    className={cn("h-full transition-all duration-700 ease-out bg-gradient-to-r", getMeterColor(score))}
+                    style={{ width: `${score}%` }}
+                />
+            </div>
+        </div>
+    );
+}
+
+const SUGGESTIONS = {
+    role: ["Senior Developer", "Creative Writer", "Data Scientist", "System Architect"],
+    task: ["Refactor for performance", "Summarize this text", "Write unit tests", "Explain this concept"],
+    context: ["Output for developers", "Business presentation", "Technical documentation", "Beginner friendly"],
+    tone: ["Professional", "Humorous", "Academic", "Concise"]
+};
+
+const STYLE_PRESETS = [
+    {
+        id: "strict",
+        name: "Strict",
+        icon: "🛡️",
+        config: { temperature: 0.1, tone: "Professional", outputFormat: "Markdown" },
+        example: "Clear, factual, and professional. Minimal fluff."
+    },
+    {
+        id: "creative",
+        name: "Creative",
+        icon: "🎨",
+        config: { temperature: 0.9, tone: "Expressive", outputFormat: "Poetic" },
+        example: "Inspired, imaginative, and engaging. High variety."
+    },
+    {
+        id: "research",
+        name: "Research",
+        icon: "🔬",
+        config: { temperature: 0.5, tone: "Academic", outputFormat: "Detailed Analysis" },
+        example: "Structured, thorough, and analytical. Evidence-based."
+    }
+];
+
+function StylePresetSelector({ onSelect }: { onSelect: (config: any, styleName: string) => void }) {
+    return (
+        <div className="grid grid-cols-3 gap-3">
+            {STYLE_PRESETS.map((preset) => (
+                <Card
+                    key={preset.id}
+                    className="cursor-pointer hover:border-primary/50 transition-all group relative overflow-hidden bg-zinc-900/50"
+                    onClick={() => onSelect(preset.config, preset.name)}
+                >
+                    <CardContent className="p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                            <span className="text-xl">{preset.icon}</span>
+                            <span className="font-bold text-sm tracking-tight">{preset.name}</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground leading-tight italic line-clamp-2">
+                            "{preset.example}"
+                        </p>
+                    </CardContent>
+                </Card>
+            ))}
+        </div>
+    );
+}
+
+function SuggestionChip({ label, onClick }: { label: string, onClick: () => void }) {
+    return (
+        <button
+            onClick={onClick}
+            className="text-[10px] px-2 py-1 rounded-full bg-zinc-900 border border-white/5 text-zinc-400 hover:text-white hover:border-white/20 hover:bg-zinc-800 transition-all cursor-pointer whitespace-nowrap"
+        >
+            + {label}
+        </button>
+    );
 }
 
 function PromptBuilderContent() {
@@ -64,7 +243,7 @@ function PromptBuilderContent() {
     const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
     const [results, setResults] = useState<ModelResult[]>([]);
     const [isGeneratingResponses, setIsGeneratingResponses] = useState(false);
-    const [versions, setVersions] = useState<{ label: string; content: string; timestamp: Date }[]>([]);
+    const [versions, setVersions] = useState<{ label: string; content: string; score?: number; timestamp: Date }[]>([]);
 
     // Tracking state
     // Tracking state
@@ -74,6 +253,7 @@ function PromptBuilderContent() {
     const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
     const [isFallbackMode, setIsFallbackMode] = useState(false);
     const [usage, setUsage] = useState<{ current: number, limit: number } | null>(null);
+    const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
 
     useEffect(() => {
         const result = evaluatePrompt(inputs);
@@ -171,6 +351,11 @@ function PromptBuilderContent() {
             fetchData();
         }
     }, [searchParams]);
+
+    const handleApplyPreset = (config: any, styleName: string) => {
+        setInputs(prev => ({ ...prev, ...config }));
+        setStyle(styleName);
+    };
 
     const handleChange = (field: string, value: string | number) => {
         setInputs((prev) => ({ ...prev, [field]: value }));
@@ -281,6 +466,95 @@ function PromptBuilderContent() {
         }
     };
 
+    const handleRate = async (index: number, rating: number) => {
+        const newResults = [...results];
+        newResults[index].rating = rating;
+        setResults(newResults);
+
+        if (currentHistoryId) {
+            try {
+                const token = localStorage.getItem("token");
+                if (!token) return;
+
+                await fetch(`/api/prompts/${currentHistoryId}/rating`, {
+                    method: "PATCH",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        modelName: newResults[index].name,
+                        rating
+                    })
+                });
+            } catch (e) {
+                console.error("Failed to submit rating", e);
+            }
+        }
+    };
+
+    const handlePinResponse = async (index: number) => {
+        const newResults = results.map((r, i) => ({
+            ...r,
+            isPinned: i === index ? !r.isPinned : false // Only one pinned response at a time
+        }));
+        setResults(newResults);
+    };
+
+    const handleReRunWithTweak = async (index: number, tweakedPrompt: string) => {
+        const modelToRun = results[index];
+        const newResults = [...results];
+        newResults[index] = { ...modelToRun, status: "error", error: "Re-running..." };
+        setResults(newResults);
+
+        try {
+            const finalPrompt = testInput ? `${tweakedPrompt}\n\n[INPUT DATA]:\n${testInput}` : tweakedPrompt;
+            const requirements = {
+                mustBeJson: inputs.outputFormat.toLowerCase().includes("json")
+            };
+
+            const res = await fetch("/api/generate/response", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    prompt: finalPrompt,
+                    requirements,
+                    model: modelToRun.name
+                }),
+            });
+            const data = await res.json();
+            if (data.results && data.results.length > 0) {
+                const updatedResults = [...results];
+                updatedResults[index] = data.results[0];
+                setResults(updatedResults);
+            }
+        } catch (e) {
+            const errorResults = [...results];
+            errorResults[index] = { ...modelToRun, status: "error", error: "Failed to re-run" };
+            setResults(errorResults);
+        }
+    };
+
+    const handleExport = (format: 'md' | 'pdf' | 'json') => {
+        const bestResult = results.find((_, i) => recommendation?.bestIndex === i);
+        const exportData: ExportData = {
+            prompt: generatedPrompt,
+            modelName: bestResult?.name,
+            response: bestResult?.text,
+            metadata: bestResult ? {
+                duration: bestResult.duration,
+                tokens: Math.round((bestResult.text?.length || 0) / 4),
+                cost: (Math.round((bestResult.text?.length || 0) / 4) / 1000) * 0.002,
+                score: bestResult.evaluation?.score
+            } : undefined
+        };
+
+        const filename = `echoprompt-${new Date().getTime()}`;
+        if (format === 'md') downloadMarkdown(exportData, `${filename}.md`);
+        else if (format === 'pdf') downloadPDF(exportData, `${filename}.pdf`);
+        else if (format === 'json') downloadJSON(exportData, `${filename}.json`);
+    };
+
     const handleSaveToHistory = async (finalResults: ModelResult[]) => {
         try {
             const token = localStorage.getItem("token");
@@ -326,10 +600,14 @@ function PromptBuilderContent() {
         try {
             const finalPrompt = testInput ? `${generatedPrompt}\n\n[INPUT DATA]:\n${testInput}` : generatedPrompt;
 
+            const requirements = {
+                mustBeJson: inputs.outputFormat.toLowerCase().includes("json")
+            };
+
             const res = await fetch("/api/generate/response", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ prompt: finalPrompt }),
+                body: JSON.stringify({ prompt: finalPrompt, requirements }),
             });
             const data = await res.json();
             if (data.results) {
@@ -494,87 +772,97 @@ function PromptBuilderContent() {
                                 <CardTitle>1. Define Intent</CardTitle>
                                 <CardDescription>What do you want the AI to do?</CardDescription>
                             </CardHeader>
-                            <CardContent className="space-y-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="role">Role</Label>
-                                    <Input
-                                        id="role"
-                                        placeholder="e.g. Senior Copywriter"
-                                        value={inputs.role}
-                                        onChange={(e) => handleChange("role", e.target.value)}
-                                    />
-                                    {!inputs.role && (
-                                        <p className="text-[11px] text-yellow-500 pt-1 animate-in fade-in slide-in-from-top-1">
-                                            ⚠️ Who should the AI act as? (e.g. 'Expert Coder')
-                                        </p>
-                                    )}
+                            <CardContent className="space-y-6">
+                                <div className="space-y-3 pb-2">
+                                    <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground/60 focus:text-primary transition-colors">Execution Styles</Label>
+                                    <StylePresetSelector onSelect={handleApplyPreset} />
                                 </div>
-
-                                <div className="space-y-2">
-                                    <Label htmlFor="task">Task *</Label>
-                                    <Textarea
-                                        id="task"
-                                        placeholder="Describe the task in detail..."
-                                        value={inputs.task}
-                                        onChange={(e) => handleChange("task", e.target.value)}
-                                        className="min-h-[100px]"
-                                    />
-                                    {inputs.task.length > 0 && inputs.task.length < 15 && (
-                                        <p className="text-[11px] text-blue-500 pt-1 animate-in fade-in slide-in-from-top-1">
-                                            ℹ️ Task is very short. Adding details improves quality.
-                                        </p>
-                                    )}
-                                </div>
-
-                                <div className="space-y-2">
-                                    <Label htmlFor="context">Context</Label>
-                                    <Textarea
-                                        id="context"
-                                        placeholder="Background info, constraints..."
-                                        value={inputs.context}
-                                        onChange={(e) => handleChange("context", e.target.value)}
-                                    />
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-4">
                                     <div className="space-y-2">
-                                        <Label htmlFor="tone">Tone</Label>
+                                        <Label htmlFor="role">Role</Label>
                                         <Input
-                                            id="tone"
-                                            placeholder="e.g. Professional"
-                                            value={inputs.tone}
-                                            onChange={(e) => handleChange("tone", e.target.value)}
+                                            id="role"
+                                            placeholder="e.g. Senior Copywriter"
+                                            value={inputs.role}
+                                            onChange={(e) => handleChange("role", e.target.value)}
                                         />
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label htmlFor="format">Output Format</Label>
-                                        <Input
-                                            id="format"
-                                            placeholder="e.g. JSON"
-                                            value={inputs.outputFormat}
-                                            onChange={(e) => handleChange("outputFormat", e.target.value)}
-                                        />
-                                        {!inputs.outputFormat && (
-                                            <p className="text-[11px] text-blue-400 pt-1 animate-in fade-in slide-in-from-top-1">
-                                                💡 Tip: Specify a format (e.g. Markdown, JSON, List).
+                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                            {SUGGESTIONS.role.map((s, i) => (
+                                                <SuggestionChip key={i} label={s} onClick={() => handleChange("role", s)} />
+                                            ))}
+                                        </div>
+                                        {!inputs.role && (
+                                            <p className="text-[11px] text-yellow-500 pt-1 animate-in fade-in slide-in-from-top-1">
+                                                ⚠️ Who should the AI act as? (e.g. 'Expert Coder')
                                             </p>
                                         )}
                                     </div>
-                                </div>
 
-                                <div className="space-y-2">
-                                    <Label>Prompt Style</Label>
-                                    <div className="flex gap-2">
-                                        {["Strict", "Creative", "Research"].map((s) => (
-                                            <Button
-                                                key={s}
-                                                variant={style === s ? "default" : "outline"}
-                                                size="sm"
-                                                onClick={() => setStyle(s)}
-                                            >
-                                                {s}
-                                            </Button>
-                                        ))}
+                                    <div className="space-y-2">
+                                        <Label htmlFor="task">Task *</Label>
+                                        <Textarea
+                                            id="task"
+                                            placeholder="Describe the task in detail..."
+                                            value={inputs.task}
+                                            onChange={(e) => handleChange("task", e.target.value)}
+                                            className="min-h-[100px]"
+                                        />
+                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                            {SUGGESTIONS.task.map((s, i) => (
+                                                <SuggestionChip key={i} label={s} onClick={() => handleChange("task", s)} />
+                                            ))}
+                                        </div>
+                                        {inputs.task.length > 0 && inputs.task.length < 15 && (
+                                            <p className="text-[11px] text-blue-500 pt-1 animate-in fade-in slide-in-from-top-1">
+                                                ℹ️ Task is very short. Adding details improves quality.
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="context">Context</Label>
+                                        <Textarea
+                                            id="context"
+                                            placeholder="Background info, constraints..."
+                                            value={inputs.context}
+                                            onChange={(e) => handleChange("context", e.target.value)}
+                                        />
+                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                            {SUGGESTIONS.context.map((s, i) => (
+                                                <SuggestionChip key={i} label={s} onClick={() => handleChange("context", s)} />
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <Label htmlFor="tone">Tone</Label>
+                                            <Input
+                                                id="tone"
+                                                placeholder="e.g. Professional"
+                                                value={inputs.tone}
+                                                onChange={(e) => handleChange("tone", e.target.value)}
+                                            />
+                                            <div className="flex flex-wrap gap-1.5 mt-2">
+                                                {SUGGESTIONS.tone.map((s, i) => (
+                                                    <SuggestionChip key={i} label={s} onClick={() => handleChange("tone", s)} />
+                                                ))}
+                                            </div>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label htmlFor="format">Output Format</Label>
+                                            <Input
+                                                id="format"
+                                                placeholder="e.g. JSON"
+                                                value={inputs.outputFormat}
+                                                onChange={(e) => handleChange("outputFormat", e.target.value)}
+                                            />
+                                            {!inputs.outputFormat && (
+                                                <p className="text-[11px] text-blue-400 pt-1 animate-in fade-in slide-in-from-top-1">
+                                                    💡 Tip: Specify a format (e.g. Markdown, JSON, List).
+                                                </p>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
 
@@ -626,7 +914,6 @@ function PromptBuilderContent() {
                                         </div>
                                     </div>
                                 )}
-
                             </CardContent>
                             <CardFooter>
                                 <TooltipProvider>
@@ -684,22 +971,13 @@ function PromptBuilderContent() {
                                 <CardTitle>2. Quality Evaluation</CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-6">
-                                <div className="space-y-2">
-                                    <div className="flex justify-between items-center">
-                                        <Label className="font-semibold">Score</Label>
-                                        <div className="flex items-center gap-3">
-                                            {evaluation.ruleLog && evaluation.ruleLog.length > 0 && (
-                                                <ExplainabilityPanel ruleLog={evaluation.ruleLog} score={evaluation.score} />
-                                            )}
-                                            <span className="text-2xl font-bold">{evaluation.score}/100</span>
-                                        </div>
-                                    </div>
-                                    <div className="h-4 w-full bg-secondary rounded-full overflow-hidden">
-                                        <div
-                                            className={`h-full transition-all duration-500 ${getScoreColor(evaluation.score)}`}
-                                            style={{ width: `${evaluation.score}%` }}
-                                        />
-                                    </div>
+                                <div className="space-y-6">
+                                    <PromptQualityMeter
+                                        score={evaluation.score}
+                                        historicalScores={versions.map(v => v.score || 0).filter(s => s > 0).concat(evaluation.score)}
+                                        ruleLog={evaluation.ruleLog}
+                                    />
+
                                     <div className="flex justify-end pt-1 gap-4 items-center">
                                         {usage && (
                                             <div className="hidden sm:flex items-center gap-2 text-xs font-medium bg-zinc-900/50 px-3 py-1.5 rounded-full border border-white/5">
@@ -774,11 +1052,29 @@ function PromptBuilderContent() {
                                     </div>
                                 )}
                                 {evaluation.suggestions.length > 0 && (
-                                    <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded text-sm text-blue-600 dark:text-blue-300">
-                                        <p className="font-semibold mb-1">Suggestions:</p>
-                                        <ul className="list-disc list-inside">
-                                            {evaluation.suggestions.map((s, i) => <li key={i}>{s}</li>)}
-                                        </ul>
+                                    <div className="space-y-3 pt-4">
+                                        <Label className="font-semibold text-blue-400 flex items-center gap-2">
+                                            <Lightbulb className="w-4 h-4" />
+                                            Actionable Suggestions
+                                        </Label>
+                                        <div className="grid gap-3">
+                                            {evaluation.suggestions.map((s, i) => (
+                                                <div key={i} className="p-3 bg-blue-500/5 rounded border border-blue-500/10 animate-in slide-in-from-right-2 fade-in duration-300">
+                                                    <div className="flex items-center gap-2 mb-1.5">
+                                                        <Badge variant="outline" className="text-[10px] h-4 px-1.5 border-blue-500/30 text-blue-400/80 bg-blue-500/5">
+                                                            {s.rule}
+                                                        </Badge>
+                                                        <span className="text-sm font-medium text-blue-100/90">{s.text}</span>
+                                                    </div>
+                                                    <div className="flex gap-2 items-start pl-1 border-l-2 border-blue-500/20 ml-1">
+                                                        <p className="text-xs text-muted-foreground/80 leading-relaxed italic">
+                                                            <span className="text-blue-400/60 not-italic font-bold mr-1">Why:</span>
+                                                            {s.reason}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
                             </CardContent>
@@ -800,6 +1096,35 @@ function PromptBuilderContent() {
                                         <CardDescription>Edit before sending to LLMs.</CardDescription>
                                     </div>
                                     <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-1 bg-zinc-900/50 p-1 rounded-md border border-white/5 mr-2">
+                                            <TooltipProvider>
+                                                <Tooltip>
+                                                    <TooltipTrigger asChild>
+                                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-blue-400" onClick={() => handleExport('md')}>
+                                                            <FileText className="w-4 h-4" />
+                                                        </Button>
+                                                    </TooltipTrigger>
+                                                    <TooltipContent>Export as Markdown</TooltipContent>
+                                                </Tooltip>
+                                                <Tooltip>
+                                                    <TooltipTrigger asChild>
+                                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-red-400" onClick={() => handleExport('pdf')}>
+                                                            <FileType className="w-4 h-4" />
+                                                        </Button>
+                                                    </TooltipTrigger>
+                                                    <TooltipContent>Export as PDF</TooltipContent>
+                                                </Tooltip>
+                                                <Tooltip>
+                                                    <TooltipTrigger asChild>
+                                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-yellow-400" onClick={() => handleExport('json')}>
+                                                            <FileJson className="w-4 h-4" />
+                                                        </Button>
+                                                    </TooltipTrigger>
+                                                    <TooltipContent>Export as JSON</TooltipContent>
+                                                </Tooltip>
+                                            </TooltipProvider>
+                                        </div>
+
                                         <Button
                                             variant={showDiff ? "default" : "outline"}
                                             size="sm"
@@ -832,11 +1157,49 @@ function PromptBuilderContent() {
                                             optimizedPrompt={generatedPrompt}
                                         />
                                     ) : (
-                                        <Textarea
-                                            className="min-h-[250px] font-mono text-sm"
-                                            value={generatedPrompt}
-                                            onChange={(e) => setGeneratedPrompt(e.target.value)}
-                                        />
+                                        <div className={cn(
+                                            "relative group rounded-lg overflow-hidden border border-white/10 bg-zinc-950/40 transition-all duration-500 ease-in-out",
+                                            isPreviewExpanded ? "min-h-[600px]" : "h-[300px]"
+                                        )}>
+                                            <Textarea
+                                                className={cn(
+                                                    "w-full h-full p-6 font-mono text-sm bg-transparent border-none focus-visible:ring-0 resize-none custom-scrollbar leading-relaxed",
+                                                    "whitespace-pre-wrap break-words overflow-y-auto overflow-x-hidden selection:bg-primary/30"
+                                                )}
+                                                value={generatedPrompt}
+                                                onChange={(e) => setGeneratedPrompt(e.target.value)}
+                                            />
+                                            <div className="absolute top-3 right-3 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                                <Button
+                                                    variant="secondary"
+                                                    size="sm"
+                                                    className="h-8 w-8 p-0 bg-zinc-900/90 backdrop-blur-md border border-white/10 hover:bg-zinc-800"
+                                                    onClick={() => setIsPreviewExpanded(!isPreviewExpanded)}
+                                                >
+                                                    {isPreviewExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                                </Button>
+                                                <Button
+                                                    variant="secondary"
+                                                    size="sm"
+                                                    className="h-8 w-8 p-0 bg-zinc-900/90 backdrop-blur-md border border-white/10 hover:bg-zinc-800"
+                                                    onClick={() => {
+                                                        navigator.clipboard.writeText(generatedPrompt);
+                                                        setCopiedIndex(999);
+                                                        setTimeout(() => setCopiedIndex(null), 2000);
+                                                    }}
+                                                >
+                                                    {copiedIndex === 999 ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                                                </Button>
+                                            </div>
+                                            {!isPreviewExpanded && (
+                                                <div
+                                                    className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-zinc-950/80 to-transparent pointer-events-none flex items-end justify-center pb-2 cursor-pointer group/fade"
+                                                    onClick={() => setIsPreviewExpanded(true)}
+                                                >
+                                                    <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest opacity-0 group-hover/fade:opacity-100 transition-opacity">Click to Expand</span>
+                                                </div>
+                                            )}
+                                        </div>
                                     )}
                                 </CardContent>
                                 <CardContent className="border-t pt-6">
@@ -874,21 +1237,27 @@ function PromptBuilderContent() {
                         )}
                     </div>
                 </div>
-            )}
+            )
+            }
 
-            {(results.length > 0 || isGeneratingResponses) && (
-                <div className="pt-10 border-t border-border/40">
-                    <ModelResultsGrid
-                        results={results}
-                        onToggleFavorite={handleFavorite}
-                        onCopy={handleCopy}
-                        copiedIndex={copiedIndex}
-                        isLoading={isGeneratingResponses}
-                        recommendation={recommendation}
-                    />
-                </div>
-            )}
-        </div>
+            {
+                (results.length > 0 || isGeneratingResponses) && (
+                    <div className="pt-10 border-t border-border/40">
+                        <ModelResultsGrid
+                            results={results}
+                            onToggleFavorite={handleFavorite}
+                            onCopy={handleCopy}
+                            copiedIndex={copiedIndex}
+                            isLoading={isGeneratingResponses}
+                            recommendation={recommendation}
+                            onRate={handleRate}
+                            onPin={handlePinResponse}
+                            onReRun={handleReRunWithTweak}
+                        />
+                    </div>
+                )
+            }
+        </div >
     );
 }
 
