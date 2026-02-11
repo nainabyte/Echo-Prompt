@@ -32,6 +32,7 @@ export async function POST(req: Request) {
             versions: body.generatedPrompt ? [{
                 label: "Version 1: AI Generated",
                 content: body.generatedPrompt,
+                score: body.evaluation?.score || 0,
                 timestamp: new Date()
             }] : []
         });
@@ -123,6 +124,7 @@ export async function PATCH(req: Request) {
             const newVersion = {
                 label: `Version ${existing.versions.length + 1}`,
                 content: updates.generatedPrompt,
+                score: updates.evaluation?.score || 0,
                 timestamp: new Date()
             };
             updates.$push = { versions: newVersion };
